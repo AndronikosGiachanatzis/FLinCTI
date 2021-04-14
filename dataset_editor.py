@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy.stats
+import seaborn as sns
+# import scipy.stats
 
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
@@ -10,15 +11,14 @@ from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.feature_selection import RFECV
 from sklearn.preprocessing import OrdinalEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-import seaborn as sns
 from mlxtend.feature_selection import SequentialFeatureSelector as SFS
 from scipy import stats
+# from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import MinMaxScaler
 
 # define constants
-N_IMPORTANT_FEATURES = 25
-VARIANCE_THRESHOLD = 0
+N_IMPORTANT_FEATURES = 25  # the number of important features to keep
+VARIANCE_THRESHOLD = 0  # the variance threshold below which variables will be deleted
 
 # features selected during feature selection
 USEFUL_FEATURES = ["Bwd Packet Length Max", "Bwd Packet Length Mean", "Bwd Packet Length Std",
@@ -109,20 +109,24 @@ def univariateSelection(x,y):
 
 def getFeatureSelectionResults(fit, columns):
     '''
-
-    :param fit:
-    :param columns:
-    :return:
+    Used for formatting the results of Univariate Selection
+    :param fit: The scores of the selection
+    :param columns: The columns of the variables
+    :return (pandas.DataFrame): The N_IMPORTANT_FEATURES most important features and their score
     '''
+    # create the frames that hold the results
     scores = pd.DataFrame(fit.scores_)
     columns = pd.DataFrame(columns)
 
+    # concat the dataframes
     featureScores = pd.concat([columns, scores], axis=1)
     featureScores.columns = ['Specs', 'Score']
-    f = open("bestFeatures-Univariate_Selection.txt", "w")
 
+    # write results to the file
+    f = open("bestFeatures-Univariate_Selection.txt", "w")
     f.write(featureScores.nlargest(N_IMPORTANT_FEATURES, 'Score')['Specs'].to_string())
     f.close()
+
     return featureScores.nlargest(N_IMPORTANT_FEATURES, 'Score')
 
 
@@ -131,20 +135,24 @@ def featureImportance(x,y):
     Performs Feature Importance Analysis for Feature Selection using the ExtraTreesClassifier
     :param x (pandas.DataFrame): The independent variables - feautres
     :param y (pandas.DataFrame): The dependent variables - labels
-    :return: The scores of the analysis
+    :return: The scores of the analysis for the N_IMPORTANT_FEATURES most important features
     '''
+
+    # fit the classifier
     model = ExtraTreesClassifier()
     model.fit(x, y)
 
+    # create the dataframe that holds the result
     scores = pd.DataFrame(model.feature_importances_)
     columns = pd.DataFrame(x.columns)
     featureScores = pd.concat([columns, scores], axis=1)
     featureScores.columns = ['Specs', 'Score']
 
+    # write the results to the file
     f = open("bestFeatures-Feature_Importance.txt", "w")
-
     f.write(featureScores.nlargest(N_IMPORTANT_FEATURES, 'Score')['Specs'].to_string())
     f.close()
+
     return model.feature_importances_
 
 
@@ -156,7 +164,7 @@ def heatMap(dataset):
     corrmat = dataset.corr()
     top_corr_feats = corrmat.index
     writeFrameToCsv(corrmat, "p-corrs1.csv")
-    # draw plot
+    # create the plot and save it
     plt.figure(figsize=(15,15))
     heatmap = sns.heatmap(dataset[top_corr_feats].corr(), annot=True, cmap="RdYlGn")
 
@@ -178,16 +186,15 @@ def removeLowVariances(x):
 
 def kendalls(dataset):
     '''
-    Creates a kendall's coefficient heatmap for the variables of the dataset
+    Creates a kendall's rank coefficient heatmap for the variables of the dataset
     :param dataset (pandas.DataFrame): The variables of which the kendall's coefficients will be found
     '''
 
     corrmat = dataset.corr()
     top_corr_feats = corrmat.index
-    writeFrameToCsv(corrmat, "k-corrs1.csv")
 
+    # create the plot and save it
     plt.figure(figsize=(50, 50))
-
     heatmap = sns.heatmap(dataset[top_corr_feats].corr(method="kendall"), annot=True, cmap="RdYlGn")
     plt.savefig('heatmap-kendall.png')
 
@@ -218,36 +225,44 @@ def SequentialFeatureSelection(x, y):
     sfs = sfs.fit(x, y)
     return sfs
 
-
-def correlation_ratio(categories, measurements):
-    fcat, _ = pd.factorize(categories)
-    cat_num = np.max(fcat) + 1
-    y_avg_array = np.zeros(cat_num)
-    n_array = np.zeros(cat_num)
-    for i in range(0, cat_num):
-        cat_measures = measurements[np.argwhere(fcat == i).flatten()]
-        n_array[i] = len(cat_measures)
-        y_avg_array[i] = np.average(cat_measures)
-    y_total_avg = np.sum(np.multiply(y_avg_array, n_array)) / np.sum(n_array)
-    numerator = np.sum(np.multiply(n_array, np.power(np.subtract(y_avg_array, y_total_avg), 2)))
-    denominator = np.sum(np.power(np.subtract(measurements, y_total_avg), 2))
-    if numerator == 0:
-        eta = 0.0
-    else:
-        eta = numerator / denominator
-    return eta
+#
+# def correlation_ratio(categories, measurements):
+#     fcat, _ = pd.factorize(categories)
+#     cat_num = np.max(fcat) + 1
+#     y_avg_array = np.zeros(cat_num)
+#     n_array = np.zeros(cat_num)
+#     for i in range(0, cat_num):
+#         cat_measures = measurements[np.argwhere(fcat == i).flatten()]
+#         n_array[i] = len(cat_measures)
+#         y_avg_array[i] = np.average(cat_measures)
+#     y_total_avg = np.sum(np.multiply(y_avg_array, n_array)) / np.sum(n_array)
+#     numerator = np.sum(np.multiply(n_array, np.power(np.subtract(y_avg_array, y_total_avg), 2)))
+#     denominator = np.sum(np.power(np.subtract(measurements, y_total_avg), 2))
+#     if numerator == 0:
+#         eta = 0.0
+#     else:
+#         eta = numerator / denominator
+#     return eta
 
 
 def pointBiserialCorrelation(x, y):
+    '''
+    Calculates the point-biserial correlation coefficients between the NUMERICAL features and the CATEGORICAL label
+    :param x (pandas.DataFrame): The numerical features
+    :param y (pandas.DataFrame): The categorical label
+    '''
 
     corrs = pd.DataFrame(columns=["Feature", "Coefficient", "p-value", "Variance"])
     for column in x:
+        # calculate the coefficients
         res = stats.pointbiserialr(x[column], y)
+        # calculate additionally the variance of the features
         var = x[column].var()
         coefs = {"Feature":column, "Coefficient":res[0], "p-value":res[1], "Variance":var}
         corrs = corrs.append(coefs, ignore_index=True)
         print(f"{column}: Correlation = {res[0]}, pvalue = {res[1]}")
 
+    # write the results to the file
     writeFrameToCsv(corrs, "point-biserial-corrs.csv")
 
 
@@ -272,7 +287,7 @@ def main():
     # pointBiserialCorrelation(x,y)
     # print(stats.pointbiserialr(x=dataset["Bwd Packet Length Mean"], y=dataset["Label"]))
     # dataset = selectFeatures(dataset)
-    # heatMap(dataset)
+    heatMap(dataset)
 
     # print(abs(dataset.corr()["Bwd Packet Length Mean"]))
 
