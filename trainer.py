@@ -7,34 +7,37 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from tensorflow import keras
 import tensorflow_federated as tff
+from datetime import datetime
 
 # define constants
 N_FEATURES = None
+N_CLIENTS = 5
 TEST_FRAC = 0.1
 N_CLASSES = 2 # ATTACK / BENIGN
-LEARNING_RATE = 0.3
+LEARNING_RATE = 0.06
 BATCH_SIZE = 32
 TRAINING_STEPS = 1000
 N_EPOCHS = 100
 SHUFFLE_BUFFER = 100
-N_ROUNDS = 500
+N_ROUNDS = 100
+
+REPORT_FILENAME = f"executions/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.txt"
+
+
 train = list()
 test = list()
 
 # features selected during feature selection
-USEFUL_FEATURES = ["ACK Flag Count", "Bwd Packet Length Mean", "Avg Bwd Segment Size",
-                   "Idle Min", "Flow IAT Max", "Fwd IAT Max", "Bwd Packet Length Std", "Average Packet Size",
-                   "Idle Mean", "min_seg_size_forward", "Packet Length Mean", "Idle Max", "Max Packet Length",
-                   "Fwd Packets/s", "Min Packet Length", "Fwd IAT Total", "FIN Flag Count", "Fwd IAT Std",
-                   "Bwd Packet Length Max", "URG Flag Count", "Packet Length Std", "Flow IAT Std",
-                   "Fwd Packet Length Min", "Flow Packets/s"]
+USEFUL_FEATURES = ["Bwd Packet Length Max", "Bwd Packet Length Mean", "Bwd Packet Length Std",
+                   "Flow IAT Std", "Flow IAT Max", "Fwd IAT Std", "Max Packet Length", "Packet Length Std",
+                   "Packet Length Variance", "Average Packet Size", "Idle Mean"]
 
 
 def selectFeatures(dataset):
     '''
     Select a subset of features from a given dataset
     :param dataset (pandas.DataFrame): The original dataset
-    :return (pandas.DataFrame): The dataset containing only a subset of the original featuress\
+    :return (pandas.DataFrame): The dataset containing only a subset of the original features
     '''
 
     return dataset[USEFUL_FEATURES + ["Label"]]
@@ -84,9 +87,11 @@ def createModel():
     '''
     # the model architecture, number and shapes of layers, activation functions
     model = keras.models.Sequential()
-    model.add(tf.keras.Input(shape=[24], name="Input"))
+    model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
     model.add(tf.keras.layers.Dense(20, activation='relu', name="Hidden_1"))
+    model.add(tf.keras.layers.Dense(20, activation='relu', name="Hidden_2"))
     model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
+
     # return model
     return tff.learning.from_keras_model(model,
                                          input_spec=train[0].element_spec,
@@ -105,11 +110,12 @@ def preprocess(dataset):
 
 def main():
 
+    """ --- PREPROCESSING ---"""
+
     # load the client datasets
-    for i in range(5):
+    for i in range(N_CLIENTS):
         tmp_dataset = loadDataset(f"client{i}.csv")
         tmp_dataset = selectFeatures(tmp_dataset)
-        N_FEATURES = tmp_dataset.columns.size - 1
 
         # seperate x from y
         x = tmp_dataset.iloc[:, :len(tmp_dataset.columns)-1]
@@ -126,22 +132,50 @@ def main():
         d = tf.data.Dataset.from_tensor_slices((x_train_scaled.values, y_train.values))
         train.append(preprocess(d))
         d = tf.data.Dataset.from_tensor_slices((x_test_scaled.values, y_test.values))
-        test.append(d)
+        test.append(preprocess(d))
+
+
+
+    """ --- TRAINING ---"""
 
     # create the Federated Averaging process
     trainer = tff.learning.build_federated_averaging_process(createModel, client_optimizer_fn=
                                     lambda: tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE))
 
+
+    print("Starting Training ...")
+
+    f = open(REPORT_FILENAME, "w+")
+    f.write("----- TRAINING -----\n")
+    f.close()
+
     # perform N_ROUNDS of training
     state = trainer.initialize()
     for i in range(N_ROUNDS):
         state, metrics = trainer.next(state, train)
-        print(f"round {i} -> Loss =  {metrics['train']['loss']}, Accuracy = {metrics['train']['accuracy']}")
+        report_string = f"round {i} -> Loss =  {metrics['train']['loss']}, Accuracy = {metrics['train']['accuracy']}"
+        print(report_string)
+
+        # write report to file
+        f = open(REPORT_FILENAME, "a+")
+        f.write(report_string + "\n")
+        f.close()
+
+    print("[+] Training Finished")
+
+    """ --- EVALUATION ---"""
+    f = open(REPORT_FILENAME, "a+")
+    f.write("\n\n----- TEST -----\n")
 
     # evaluate the model
-    evalulation = tff.learning.build_federated_evaluation(createModel)
-    eval_metrics = evalulation(state.model, test)
-    print(eval_metrics)
+    evaluation = tff.learning.build_federated_evaluation(createModel)
+    eval_metrics = evaluation(state.model, test)
+    report_string = f"\nLoss = {eval_metrics['loss']}, Accuracy = {eval_metrics['accuracy']}"
+
+    # print results
+    print(report_string)
+    f.write(report_string + "\n")
+    f.close()
 
     # print(dataset.info())
     #
