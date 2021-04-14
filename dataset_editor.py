@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.stats
 
 from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
@@ -13,18 +14,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 import seaborn as sns
 from mlxtend.feature_selection import SequentialFeatureSelector as SFS
+from scipy import stats
 
 # define constants
 N_IMPORTANT_FEATURES = 25
 VARIANCE_THRESHOLD = 0
 
 # features selected during feature selection
-USEFUL_FEATURES = ["ACK Flag Count", "Bwd Packet Length Mean", "Avg Bwd Segment Size",
-                   "Idle Min", "Flow IAT Max", "Fwd IAT Max", "Bwd Packet Length Std", "Average Packet Size",
-                   "Idle Mean", "min_seg_size_forward", "Packet Length Mean", "Idle Max", "Max Packet Length",
-                   "Fwd Packets/s", "Min Packet Length", "Fwd IAT Total", "FIN Flag Count", "Fwd IAT Std",
-                   "Bwd Packet Length Max", "URG Flag Count", "Packet Length Std", "Flow IAT Std",
-                   "Fwd Packet Length Min", "Flow Packets/s"]
+USEFUL_FEATURES = ["Bwd Packet Length Max", "Bwd Packet Length Mean", "Bwd Packet Length Std",
+                   "Flow IAT Std", "Flow IAT Max", "Fwd IAT Std", "Fwd IAT Max", "Max Packet Length",
+                   "Packet Length Mean", "Packet Length Std", "Packet Length Variance", "Average Packet Size",
+                   "Avg Bwd Segment Size", "Idle Mean", "Idle Max", "Idle Min"]
 
 
 def loadDataset(name):
@@ -155,13 +155,13 @@ def heatMap(dataset):
     '''
     corrmat = dataset.corr()
     top_corr_feats = corrmat.index
-
+    writeFrameToCsv(corrmat, "p-corrs1.csv")
     # draw plot
-    plt.figure(figsize=(30, 30))
+    plt.figure(figsize=(15,15))
     heatmap = sns.heatmap(dataset[top_corr_feats].corr(), annot=True, cmap="RdYlGn")
 
     # save plot
-    plt.savefig('heatmap.png')
+    plt.savefig('heatmap-only-point-biserial.png')
 
 
 def removeLowVariances(x):
@@ -181,10 +181,11 @@ def kendalls(dataset):
     Creates a kendall's coefficient heatmap for the variables of the dataset
     :param dataset (pandas.DataFrame): The variables of which the kendall's coefficients will be found
     '''
-    import seaborn as sns
 
     corrmat = dataset.corr()
     top_corr_feats = corrmat.index
+    writeFrameToCsv(corrmat, "k-corrs1.csv")
+
     plt.figure(figsize=(50, 50))
 
     heatmap = sns.heatmap(dataset[top_corr_feats].corr(method="kendall"), annot=True, cmap="RdYlGn")
@@ -218,6 +219,38 @@ def SequentialFeatureSelection(x, y):
     return sfs
 
 
+def correlation_ratio(categories, measurements):
+    fcat, _ = pd.factorize(categories)
+    cat_num = np.max(fcat) + 1
+    y_avg_array = np.zeros(cat_num)
+    n_array = np.zeros(cat_num)
+    for i in range(0, cat_num):
+        cat_measures = measurements[np.argwhere(fcat == i).flatten()]
+        n_array[i] = len(cat_measures)
+        y_avg_array[i] = np.average(cat_measures)
+    y_total_avg = np.sum(np.multiply(y_avg_array, n_array)) / np.sum(n_array)
+    numerator = np.sum(np.multiply(n_array, np.power(np.subtract(y_avg_array, y_total_avg), 2)))
+    denominator = np.sum(np.power(np.subtract(measurements, y_total_avg), 2))
+    if numerator == 0:
+        eta = 0.0
+    else:
+        eta = numerator / denominator
+    return eta
+
+
+def pointBiserialCorrelation(x, y):
+
+    corrs = pd.DataFrame(columns=["Feature", "Coefficient", "p-value", "Variance"])
+    for column in x:
+        res = stats.pointbiserialr(x[column], y)
+        var = x[column].var()
+        coefs = {"Feature":column, "Coefficient":res[0], "p-value":res[1], "Variance":var}
+        corrs = corrs.append(coefs, ignore_index=True)
+        print(f"{column}: Correlation = {res[0]}, pvalue = {res[1]}")
+
+    writeFrameToCsv(corrs, "point-biserial-corrs.csv")
+
+
 def main():
     dataset = loadDataset("binaryDatasetCleanEncodedNoZeros.csv")
 
@@ -225,10 +258,19 @@ def main():
     x_cols = x.columns
     y = dataset.iloc[:, -1]
 
-    sub = SequentialFeatureSelection(x, y)
-    print()
 
+    print(dataset[["Average Packet Size", "Packet Length Mean"]].describe())
 
+    dataset["Packet Length Mean"].plot.hist(bins=20)
+    plt.title('Title')
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.show()
+    # sub = SequentialFeatureSelection(x, y)
+    # print()
+
+    # pointBiserialCorrelation(x,y)
+    # print(stats.pointbiserialr(x=dataset["Bwd Packet Length Mean"], y=dataset["Label"]))
     # dataset = selectFeatures(dataset)
     # heatMap(dataset)
 
