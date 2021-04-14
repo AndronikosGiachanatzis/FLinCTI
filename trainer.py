@@ -1,36 +1,42 @@
 import pandas as pd
-import numpy as np
-import argparse
 import tensorflow as tf
+import tensorflow_federated as tff
+
+# import numpy as np
+# import argparse
+# import matplotlib.pyplot as plt
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
 from tensorflow import keras
-import tensorflow_federated as tff
 from datetime import datetime
 
+
 # define constants
-N_FEATURES = None
-N_CLIENTS = 5
-TEST_FRAC = 0.1
+# N_FEATURES = None # the number of the features
+N_CLIENTS = 5 # the total number of the clients
+TEST_FRAC = 0.1 # The fraction of the complete dataset that will be taken for the test set
 N_CLASSES = 2 # ATTACK / BENIGN
+
 LEARNING_RATE = 0.06
 BATCH_SIZE = 32
-TRAINING_STEPS = 1000
-N_EPOCHS = 100
+N_EPOCHS = 100 # the number of epochs (times the dataset will be repeated)
 SHUFFLE_BUFFER = 100
-N_ROUNDS = 100
+N_ROUNDS = 100 # The number of the federated training rounds
 
-REPORT_FILENAME = f"executions/{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.txt"
+train = list() # the list with the client train sets
+test = list() # the list with the client test sets
+
+REPORT_FILENAME = f"executions/{datetime.now().strftime('%d-%m-%Y_%H.%M.%S')}.txt" # the name of the report file
 
 
-train = list()
-test = list()
 
 # features selected during feature selection
-USEFUL_FEATURES = ["Bwd Packet Length Max", "Bwd Packet Length Mean", "Bwd Packet Length Std",
-                   "Flow IAT Std", "Flow IAT Max", "Fwd IAT Std", "Max Packet Length", "Packet Length Std",
-                   "Packet Length Variance", "Average Packet Size", "Idle Mean"]
+USEFUL_FEATURES = ["Bwd Packet Length Mean", "Avg Bwd Segment Size",  "Idle Min", "Flow IAT Max", "Fwd IAT Max",
+                   "Bwd Packet Length Std", "Average Packet Size", "Idle Mean", "min_seg_size_forward",
+                   "Packet Length Mean", "Idle Max", "Max Packet Length",  "Fwd Packets/s", "Min Packet Length",
+                   "Fwd IAT Total", "Fwd IAT Std",  "Bwd Packet Length Max", "Packet Length Std", "Flow IAT Std",
+                   "Fwd Packet Length Min", "Flow Packets/s"]
 
 
 def selectFeatures(dataset):
@@ -80,17 +86,43 @@ def scaleX(x_train, x_test=None):
     return x_train_scaled
 
 
+def defineModel(write_file=False):
+    '''
+    Defines a keras model and its architecture
+    :param write_file (Boolean): If True then it will write the architecture of the model to the report file
+    :return (keras Sequential Model): The keras model
+    '''
+    # define the model's architecture
+    model = keras.models.Sequential()
+    model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
+    model.add(tf.keras.layers.Dense(26, activation='relu', name="Hidden_1"))
+    model.add(tf.keras.layers.Dense(21, activation='relu', name="Hidden_2"))
+    model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
+
+
+    # write the architecture of the network to the file
+    if write_file:
+
+        f = open(REPORT_FILENAME, "a+")
+        f.write("\n\n----- NETWORK ARCHITECTURE -----\n")
+        f.write(f"HIDDEN LAYERS: {str(len(model.layers)-1)}\n")
+        for l in model.layers:
+            neurons = l.units
+            if l.name != "Output":
+                f.write(f"\tSHAPE: {neurons}, ACTIVATION FUNCTION: RELU\n")
+
+        f.close()
+
+    return model
+
+
 def createModel():
     '''
     Defines the network's architecture (layers, shapes, activation functions, losses and metrics and builds the model
     :return (tff.learning.Model): The built model
     '''
-    # the model architecture, number and shapes of layers, activation functions
-    model = keras.models.Sequential()
-    model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
-    model.add(tf.keras.layers.Dense(20, activation='relu', name="Hidden_1"))
-    model.add(tf.keras.layers.Dense(20, activation='relu', name="Hidden_2"))
-    model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
+    # define the model's architecture
+    model = defineModel()
 
     # return model
     return tff.learning.from_keras_model(model,
@@ -128,12 +160,21 @@ def main():
         # scale the dataset
         x_train_scaled, x_test_scaled = scaleX(x_train, x_test)
 
-        # transform the train and test sets to TF datasets
+        # transform the train and test sets to TF datasets after you preprocess them first
         d = tf.data.Dataset.from_tensor_slices((x_train_scaled.values, y_train.values))
         train.append(preprocess(d))
         d = tf.data.Dataset.from_tensor_slices((x_test_scaled.values, y_test.values))
         test.append(preprocess(d))
 
+
+    # write the features to a file
+    f = open(REPORT_FILENAME, "w+")
+    f.write("---- FEATURES ----\n")
+    f.write(str(USEFUL_FEATURES))
+    f.close()
+
+    # write the model's architecture to a file
+    defineModel(write_file=True)
 
 
     """ --- TRAINING ---"""
@@ -145,8 +186,8 @@ def main():
 
     print("Starting Training ...")
 
-    f = open(REPORT_FILENAME, "w+")
-    f.write("----- TRAINING -----\n")
+    f = open(REPORT_FILENAME, "a+")
+    f.write("\n\n----- TRAINING -----\n")
     f.close()
 
     # perform N_ROUNDS of training
