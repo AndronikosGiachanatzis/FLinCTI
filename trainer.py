@@ -6,8 +6,10 @@ import tensorflow_federated as tff
 # import argparse
 # import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from tensorflow import keras
 from datetime import datetime
 
@@ -18,23 +20,25 @@ N_CLIENTS = 5 # the total number of the clients
 TEST_FRAC = 0.1 # The fraction of the complete dataset that will be taken for the test set
 N_CLASSES = 2 # ATTACK / BENIGN
 
-LEARNING_RATE = 0.06
+LEARNING_RATE = 0.0003
 BATCH_SIZE = 32
-N_EPOCHS = 100 # the number of epochs (times the dataset will be repeated)
+N_EPOCHS = 100  # the number of epochs (times the dataset will be repeated)
 SHUFFLE_BUFFER = 100
-N_ROUNDS = 100 # The number of the federated training rounds
+N_ROUNDS = 30  # The number of the federated training rounds
 
-train = list() # the list with the client train sets
-test = list() # the list with the client test sets
+train = list()  # the list with the client train sets
+test = list()   # the list with the client test sets
 
 REPORT_FILENAME = f"executions/{datetime.now().strftime('%d-%m-%Y_%H.%M.%S')}.txt" # the name of the report file
 
 
 
 # features selected during feature selection
-USEFUL_FEATURES = ["Bwd Packet Length Mean", "Avg Bwd Segment Size",  "Idle Min", "Flow IAT Max", "Fwd IAT Max",
-                   "Bwd Packet Length Std", "Average Packet Size", "Idle Mean", "min_seg_size_forward",
-                   "Packet Length Mean", "Idle Max", "Max Packet Length",  "Fwd Packets/s", "Min Packet Length",
+# these features were selected using Feature Importance (ExtraTreesClassifier and further discarding the
+# features with low variance
+USEFUL_FEATURES = ["Bwd Packet Length Mean", "Avg Bwd Segment Size", "Flow IAT Max", "Fwd IAT Max",
+                   "Bwd Packet Length Std", "Idle Mean", "min_seg_size_forward",
+                   "Packet Length Mean", "Max Packet Length",  "Fwd Packets/s", "Min Packet Length",
                    "Fwd IAT Total", "Fwd IAT Std",  "Bwd Packet Length Max", "Packet Length Std", "Flow IAT Std",
                    "Fwd Packet Length Min", "Flow Packets/s"]
 
@@ -86,6 +90,26 @@ def scaleX(x_train, x_test=None):
     return x_train_scaled
 
 
+def standardizeX(x_train, x_test=None):
+    '''
+    Standardizes the features. If passed with a test set then, the test set is standardized using the
+    training set.
+    :param x_train (pandas.DataFrame): The training x (features)
+    :param x_test (pandas.DataFrame): (optional) The test x (features)
+    :return (pandas.DataFrame(s)): The standardized dataset(s)
+    '''
+    standardizer = StandardScaler().fit(x_train)
+
+    x_cols = x_train.columns
+
+    x_train_std = pd.DataFrame(standardizer.transform(x_train), columns=x_cols)
+
+    if x_test is not None:
+        x_test_std = pd.DataFrame(standardizer.transform(x_test), columns=x_cols)
+        return x_train_std, x_test_std
+
+    return x_train_std
+
 def defineModel(write_file=False):
     '''
     Defines a keras model and its architecture
@@ -95,8 +119,8 @@ def defineModel(write_file=False):
     # define the model's architecture
     model = keras.models.Sequential()
     model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
-    model.add(tf.keras.layers.Dense(26, activation='relu', name="Hidden_1"))
-    model.add(tf.keras.layers.Dense(21, activation='relu', name="Hidden_2"))
+    model.add(tf.keras.layers.Dense(150, activation='relu', name="Hidden_1"))
+    model.add(tf.keras.layers.Dense(150, activation='relu', name="Hidden_2"))
     model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
 
 
@@ -146,16 +170,35 @@ def main():
 
     # load the client datasets
     for i in range(N_CLIENTS):
-        tmp_dataset = loadDataset(f"client{i}.csv")
+        tmp_dataset = loadDataset(f"Corrected_Datasets/client_{i}.csv")
         tmp_dataset = selectFeatures(tmp_dataset)
 
-        # seperate x from y
-        x = tmp_dataset.iloc[:, :len(tmp_dataset.columns)-1]
-        x_cols = x.columns
-        y = tmp_dataset.iloc[:, -1]
+        # seperate label (y) from features (x)
+        x = tmp_dataset.drop("Label", axis="columns")
+        y = tmp_dataset["Label"].copy()
 
         # split the dataset into train and test sets
-        x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=TEST_FRAC, random_state=42)
+        # x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=TEST_FRAC, random_state=42)
+
+        # split train and test set (STRATIFIED)
+        split = StratifiedShuffleSplit(n_splits=1, test_size=TEST_FRAC, random_state=42)
+        for tr_index, test_index in split.split(tmp_dataset, tmp_dataset["Label"]):
+            # train sets
+            x_train = x.loc[tr_index]
+            y_train = y.loc[tr_index]
+
+            # test sets
+            x_test = x.loc[test_index]
+            y_test = y.loc[test_index]
+
+        # reset indices
+        x_train = x_train.reset_index(drop=True)
+        y_train = y_train.reset_index(drop=True)
+        x_test = x_test.reset_index(drop=True)
+        y_test = y_test.reset_index(drop=True)
+
+        # standardize the dataset
+        # x_train_scaled, x_test_scaled = standardizeX(x_train, x_test)
 
         # scale the dataset
         x_train_scaled, x_test_scaled = scaleX(x_train, x_test)
@@ -181,7 +224,7 @@ def main():
 
     # create the Federated Averaging process
     trainer = tff.learning.build_federated_averaging_process(createModel, client_optimizer_fn=
-                                    lambda: tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE))
+                                    lambda: tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
 
 
     print("Starting Training ...")
