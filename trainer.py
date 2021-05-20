@@ -1,35 +1,42 @@
+# load required packages
+
 import pandas as pd
 import tensorflow as tf
 import tensorflow_federated as tff
-
+import os
+import matplotlib.pyplot as plt
+import argparse
 # import numpy as np
-# import argparse
-# import matplotlib.pyplot as plt
 
-# from sklearn.model_selection import train_test_split
+
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
 from tensorflow import keras
 from datetime import datetime
+from checkpoint_manager import FileCheckpointManager
 
 
 # define constants
 # N_FEATURES = None # the number of the features
-N_CLIENTS = 5 # the total number of the clients
-TEST_FRAC = 0.1 # The fraction of the complete dataset that will be taken for the test set
-N_CLASSES = 2 # ATTACK / BENIGN
+N_CLIENTS = 5    # the total number of the clients
+TEST_FRAC = 0.1    # The fraction of the complete dataset that will be taken for the test set
+N_CLASSES = 2    # ATTACK / BENIGN
 
-LEARNING_RATE = 0.0003
+LEARNING_RATE = 0.0006
 BATCH_SIZE = 32
-N_EPOCHS = 100  # the number of epochs (times the dataset will be repeated)
+N_EPOCHS = 1  # the number of epochs (times the dataset will be repeated)
 SHUFFLE_BUFFER = 100
-N_ROUNDS = 30  # The number of the federated training rounds
+N_ROUNDS = 1    # The number of the federated training rounds
 
 train = list()  # the list with the client train sets
 test = list()   # the list with the client test sets
 
-REPORT_FILENAME = f"executions/{datetime.now().strftime('%d-%m-%Y_%H.%M.%S')}.txt" # the name of the report file
+# define constants for reporting
+DATE = datetime.now().strftime('%d-%m-%Y_%H.%M.%S')
+EXECUTIONS_DIR = "executions"
+REPORT_EXTENSION = "txt"
+REPORT_FILENAME = f"{EXECUTIONS_DIR}/{DATE}/{DATE}.{REPORT_EXTENSION}"  # the name of the report file
 
 
 
@@ -41,6 +48,25 @@ USEFUL_FEATURES = ["Bwd Packet Length Mean", "Avg Bwd Segment Size", "Flow IAT M
                    "Packet Length Mean", "Max Packet Length",  "Fwd Packets/s", "Min Packet Length",
                    "Fwd IAT Total", "Fwd IAT Std",  "Bwd Packet Length Max", "Packet Length Std", "Flow IAT Std",
                    "Fwd Packet Length Min", "Flow Packets/s"]
+
+
+def getCMDArgs():
+    '''
+    Parses the arguments given in the terminal
+    :return: The arguments' values
+    '''
+
+    # define parser
+    parser = argparse.ArgumentParser(description="Trains and evaluates a classifier for classifying whether a network "
+                                                 "flor is intrusive or normal",
+                                     usage="python trainer.py [OPTION] ... [FILENAME]")
+
+    # add arguments
+    parser.add_argument("-m", "--model", help="Load and evaluate a pre-trained model. Add the path to the pre-trained "
+                                   "model's directory")
+
+    args = parser.parse_args()
+    return args.model
 
 
 def selectFeatures(dataset):
@@ -119,9 +145,9 @@ def defineModel(write_file=False):
     # define the model's architecture
     model = keras.models.Sequential()
     model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
-    model.add(tf.keras.layers.Dense(150, activation='relu', name="Hidden_1"))
-    model.add(tf.keras.layers.Dense(150, activation='relu', name="Hidden_2"))
-    model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
+    model.add(tf.keras.layers.Dense(50, kernel_initializer="he_normal", activation='relu', name="Hidden_1"))
+    model.add(tf.keras.layers.Dense(50, kernel_initializer="he_normal", activation='relu', name="Hidden_2"))
+    model.add(tf.keras.layers.Dense(1, kernel_initializer="he_normal", activation="sigmoid", name="Output"))
 
 
     # write the architecture of the network to the file
@@ -155,19 +181,32 @@ def createModel():
                                          metrics=[tf.keras.metrics.Accuracy()])
 
 
-def preprocess(dataset):
+def preprocess(dataset, n_reps=N_EPOCHS, shuffle_buffer=SHUFFLE_BUFFER, batch_size=BATCH_SIZE):
     '''
     Preprocesses the data. Repeats, shuffles and creates batches of a given dataset
     :param dataset (pandas.DataFrame): The dataset which will be preprocessed
     :return (pandas.DataFrame): The processed dataset
     '''
-    return dataset.repeat(N_EPOCHS).shuffle(SHUFFLE_BUFFER).batch(BATCH_SIZE)
+    return dataset.repeat(n_reps).shuffle(shuffle_buffer).batch(batch_size)
 
+def plotHistory(history):
+    """
+    Plots the training curves based on the loss and accuracy of the model
+    :param history (pd.DataFrame): The frame containing the training metrics
+    """
+    pd.DataFrame(history).plot(figsize=(8, 5))
+    plt.grid(True)
+    plt.gca().set_ylim(0, 1)
+    plt.savefig(f"{EXECUTIONS_DIR}/{DATE}/training_curves.png")
+
+    plt.show()
 
 def main():
 
-    """ --- PREPROCESSING ---"""
+    # parse the cmd arguments
+    args = getCMDArgs()
 
+    """ --- PREPROCESSING ---"""
     # load the client datasets
     for i in range(N_CLIENTS):
         tmp_dataset = loadDataset(f"Corrected_Datasets/client_{i}.csv")
@@ -207,49 +246,77 @@ def main():
         d = tf.data.Dataset.from_tensor_slices((x_train_scaled.values, y_train.values))
         train.append(preprocess(d))
         d = tf.data.Dataset.from_tensor_slices((x_test_scaled.values, y_test.values))
-        test.append(preprocess(d))
+        test.append(preprocess(d, n_reps=1))
 
 
-    # write the features to a file
-    f = open(REPORT_FILENAME, "w+")
-    f.write("---- FEATURES ----\n")
-    f.write(str(USEFUL_FEATURES))
-    f.close()
-
-    # write the model's architecture to a file
-    defineModel(write_file=True)
+    # create and initialize the Federated Averaging process
+    trainer = tff.learning.build_federated_averaging_process(createModel, client_optimizer_fn=
+                                    lambda: tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+    state = trainer.initialize()
 
 
     """ --- TRAINING ---"""
 
-    # create the Federated Averaging process
-    trainer = tff.learning.build_federated_averaging_process(createModel, client_optimizer_fn=
-                                    lambda: tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+    if args is not None:  # evaluate only a pre-trained model
+        # load the pre-trained model
+        fcm = FileCheckpointManager(args, prefix="saved_model")
+        state, _ = fcm.load_latest_checkpoint(state)
 
+    else:   # train and evaluate a model
 
-    print("Starting Training ...")
+        # create report directory
+        try:
+            os.mkdir(f"{EXECUTIONS_DIR}/{DATE}")
+        except OSError as oserr:
+            print("\n[-] Creation of report directory failed. Exiting...")
+            return 1
+        else:
+            print("\n[+] Report directory was created successfully.")
 
-    f = open(REPORT_FILENAME, "a+")
-    f.write("\n\n----- TRAINING -----\n")
-    f.close()
-
-    # perform N_ROUNDS of training
-    state = trainer.initialize()
-    for i in range(N_ROUNDS):
-        state, metrics = trainer.next(state, train)
-        report_string = f"round {i} -> Loss =  {metrics['train']['loss']}, Accuracy = {metrics['train']['accuracy']}"
-        print(report_string)
-
-        # write report to file
-        f = open(REPORT_FILENAME, "a+")
-        f.write(report_string + "\n")
+        # write the features to a file
+        f = open(REPORT_FILENAME, "w+")
+        f.write("---- FEATURES ----\n")
+        f.write(str(USEFUL_FEATURES))
         f.close()
 
-    print("[+] Training Finished")
+        # write the model's architecture to a file
+        defineModel(write_file=True)
 
-    """ --- EVALUATION ---"""
-    f = open(REPORT_FILENAME, "a+")
-    f.write("\n\n----- TEST -----\n")
+        # write the optimizer to the report file
+        f = open(REPORT_FILENAME, "a+")
+        f.write("\n\n---- OPTIMIZER ----\n")
+        f.write(f"\tOptimizer: Adam\n\tLearning Rate: {LEARNING_RATE}")
+        f.close()
+
+        print("Starting Training ...")
+
+        f = open(REPORT_FILENAME, "a+")
+        f.write("\n\n----- TRAINING -----\n")
+        f.close()
+
+        history = pd.DataFrame(columns=["Loss", "Accuracy"])
+
+        # perform N_ROUNDS of training
+        for i in range(N_ROUNDS):
+            state, metrics = trainer.next(state, train)
+            report_string = f"round {i} -> Loss =  {metrics['train']['loss']}, Accuracy = {metrics['train']['accuracy']}"
+            print(report_string)
+            history = history.append({"Loss": metrics['train']['loss'], "Accuracy": metrics['train']['accuracy']}
+                                     , ignore_index=True)
+
+            # write report to file
+            f = open(REPORT_FILENAME, "a+")
+            f.write(report_string + "\n")
+            f.close()
+
+        plotHistory(history)
+        print("[+] Training Finished")
+
+        # save model as a checkpoint
+        fcm = FileCheckpointManager(f'{EXECUTIONS_DIR}/{DATE}/', prefix=f"saved_model_{DATE}_")
+        fcm.save_checkpoint(state, round_num=N_ROUNDS)
+
+    """ --- EVALUATION ---s"""
 
     # evaluate the model
     evaluation = tff.learning.build_federated_evaluation(createModel)
@@ -258,8 +325,14 @@ def main():
 
     # print results
     print(report_string)
-    f.write(report_string + "\n")
-    f.close()
+
+    if args is None:    # write to file only if training a model
+        f = open(REPORT_FILENAME, "a+")
+        f.write("\n\n----- TEST -----\n")
+        f.write(report_string + "\n")
+        f.close()
+
+
 
     # print(dataset.info())
     #
