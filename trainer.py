@@ -23,11 +23,11 @@ N_CLIENTS = 5    # the total number of the clients
 TEST_FRAC = 0.1    # The fraction of the complete dataset that will be taken for the test set
 N_CLASSES = 2    # ATTACK / BENIGN
 
-LEARNING_RATE = 0.0006
+LEARNING_RATE = 0.001
 BATCH_SIZE = 32
-N_EPOCHS = 1  # the number of epochs (times the dataset will be repeated)
-SHUFFLE_BUFFER = 100
-N_ROUNDS = 1    # The number of the federated training rounds
+N_EPOCHS = 100  # the number of epochs (times the dataset will be repeated)
+SHUFFLE_BUFFER = 130000
+N_ROUNDS = 10    # The number of the federated training rounds
 
 train = list()  # the list with the client train sets
 test = list()   # the list with the client test sets
@@ -136,18 +136,22 @@ def standardizeX(x_train, x_test=None):
 
     return x_train_std
 
-def defineModel(write_file=False):
+
+def defineModel(input_shape, write_file=False):
     '''
     Defines a keras model and its architecture
     :param write_file (Boolean): If True then it will write the architecture of the model to the report file
     :return (keras Sequential Model): The keras model
     '''
+    hidden_activation_fn = "selu"
     # define the model's architecture
     model = keras.models.Sequential()
-    model.add(tf.keras.Input(shape=[train[0].element_spec[0].shape.dims[1]], name="Input"))
-    model.add(tf.keras.layers.Dense(50, kernel_initializer="he_normal", activation='relu', name="Hidden_1"))
-    model.add(tf.keras.layers.Dense(50, kernel_initializer="he_normal", activation='relu', name="Hidden_2"))
-    model.add(tf.keras.layers.Dense(1, kernel_initializer="he_normal", activation="sigmoid", name="Output"))
+    model.add(tf.keras.Input(shape=[input_shape], name="Input"))
+    model.add(tf.keras.layers.Dense(200, activation=hidden_activation_fn, kernel_initializer="lecun_normal",
+                                    name="Hidden_1"))
+    model.add(tf.keras.layers.Dense(150, activation=hidden_activation_fn, kernel_initializer="lecun_normal",
+                                    name="Hidden_2"))
+    model.add(tf.keras.layers.Dense(1, activation="sigmoid", name="Output"))
 
 
     # write the architecture of the network to the file
@@ -158,8 +162,9 @@ def defineModel(write_file=False):
         f.write(f"HIDDEN LAYERS: {str(len(model.layers)-1)}\n")
         for l in model.layers:
             neurons = l.units
+            hidden_activation_fn = l.output.name
             if l.name != "Output":
-                f.write(f"\tSHAPE: {neurons}, ACTIVATION FUNCTION: RELU\n")
+                f.write(f"\tSHAPE: {neurons}, ACTIVATION FUNCTION: {hidden_activation_fn}\n")
 
         f.close()
 
@@ -172,7 +177,7 @@ def createModel():
     :return (tff.learning.Model): The built model
     '''
     # define the model's architecture
-    model = defineModel()
+    model = defineModel(train[0].element_spec[0].shape.dims[1])
 
     # return model
     return tff.learning.from_keras_model(model,
@@ -187,7 +192,8 @@ def preprocess(dataset, n_reps=N_EPOCHS, shuffle_buffer=SHUFFLE_BUFFER, batch_si
     :param dataset (pandas.DataFrame): The dataset which will be preprocessed
     :return (pandas.DataFrame): The processed dataset
     '''
-    return dataset.repeat(n_reps).shuffle(shuffle_buffer).batch(batch_size)
+    return dataset.repeat(n_reps).shuffle(shuffle_buffer).batch(batch_size).prefetch(1)
+
 
 def plotHistory(history):
     """
@@ -200,6 +206,7 @@ def plotHistory(history):
     plt.savefig(f"{EXECUTIONS_DIR}/{DATE}/training_curves.png")
 
     plt.show()
+
 
 def main():
 
@@ -240,11 +247,18 @@ def main():
         # x_train_scaled, x_test_scaled = standardizeX(x_train, x_test)
 
         # scale the dataset
-        x_train_scaled, x_test_scaled = scaleX(x_train, x_test)
+        # x_train_scaled, x_test_scaled = scaleX(x_train, x_test)
+        pd.set_option('display.max_columns', 30)
+        # print(x_train_scaled.describe())
+        # standardize the dataset
+        x_train_scaled, x_test_scaled = standardizeX(x_train, x_test)
+
+        print(x_train_scaled.describe())
 
         # transform the train and test sets to TF datasets after you preprocess them first
         d = tf.data.Dataset.from_tensor_slices((x_train_scaled.values, y_train.values))
         train.append(preprocess(d))
+        # test set does not need to be repeated only one instance is enough
         d = tf.data.Dataset.from_tensor_slices((x_test_scaled.values, y_test.values))
         test.append(preprocess(d, n_reps=1))
 
@@ -252,6 +266,7 @@ def main():
     # create and initialize the Federated Averaging process
     trainer = tff.learning.build_federated_averaging_process(createModel, client_optimizer_fn=
                                     lambda: tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE))
+
     state = trainer.initialize()
 
 
@@ -280,7 +295,7 @@ def main():
         f.close()
 
         # write the model's architecture to a file
-        defineModel(write_file=True)
+        defineModel(train[0].element_spec[0].shape.dims[1], write_file=True)
 
         # write the optimizer to the report file
         f = open(REPORT_FILENAME, "a+")
