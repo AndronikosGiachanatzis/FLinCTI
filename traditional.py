@@ -15,17 +15,6 @@ from trainer import BATCH_SIZE
 from trainer import defineModel
 
 
-# def defineModel(n_features):
-#
-#     model = keras.models.Sequential()
-#     model.add(keras.layers.InputLayer(input_shape=[n_features]))
-#     model.add(keras.layers.Dense(150, kernel_initializer="he_normal", activation='relu', name="Hidden_1"))
-#     model.add(keras.layers.Dense(150, kernel_initializer="he_normal", activation='relu', name="Hidden_2"))
-#     model.add(keras.layers.Dense(1, kernel_initializer="he_normal", activation="sigmoid", name="Output"))
-#
-#     return model
-
-
 def plotHistory(history):
     """
     Plots the training curves based on the loss and accuracy of the model
@@ -33,6 +22,9 @@ def plotHistory(history):
     """
     pd.DataFrame(history).plot(figsize=(8, 5))
     plt.grid(True)
+    plt.title("Training Curves of Traditional Model")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss and Accuracy")
     plt.gca().set_ylim(0, 1)
 
     plt.show()
